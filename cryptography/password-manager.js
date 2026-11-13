@@ -10,114 +10,226 @@ const { subtle } = require('crypto').webcrypto;
 const PBKDF2_ITERATIONS = 100000; // number of iterations for PBKDF2 algorithm
 const MAX_PASSWORD_LENGTH = 64;   // we can assume no password is longer than this many characters
 
+// Padding layout: [2-byte big-endian length][password bytes][zero padding]
+// A JS string of <= 64 UTF-16 units encodes to at most 3 UTF-8 bytes per unit
+// (a surrogate pair is 2 units -> 4 bytes), so 64 * 3 = 192 bytes is always enough.
+// Every record therefore encrypts exactly PADDED_LENGTH bytes, whatever the password length.
+const MAX_PASSWORD_BYTES = MAX_PASSWORD_LENGTH * 3;
+const PADDED_LENGTH = 2 + MAX_PASSWORD_BYTES;
+
+const SALT_LENGTH = 16;           // 128-bit salt
+const IV_LENGTH = 12;             // 96-bit IV, the recommended size for AES-GCM
+const CHECK_PLAINTEXT = "keychain-password-check";
+const CHECK_AAD = "keychain-check-v1"; // never equals a Base64 lookup key, so it can't be confused with a record
+
+/********* Helpers ********/
+
+/** Pads a password to a fixed length so ciphertext length reveals nothing. */
+function padValue(value) {
+  if (typeof value !== "string") throw "Value must be a string";
+  if (value.length > MAX_PASSWORD_LENGTH) throw "Password exceeds maximum length";
+  const bytes = stringToBuffer(value);
+  const padded = new Uint8Array(PADDED_LENGTH); // zero-filled
+  padded[0] = (bytes.length >> 8) & 0xff;
+  padded[1] = bytes.length & 0xff;
+  padded.set(bytes, 2);
+  return padded;
+}
+
+/** Reverses padValue. */
+function unpadValue(padded) {
+  const bytes = new Uint8Array(padded);
+  if (bytes.length !== PADDED_LENGTH) throw "Tampering detected: bad record size";
+  const len = (bytes[0] << 8) | bytes[1];
+  if (len > MAX_PASSWORD_BYTES) throw "Tampering detected: bad padding";
+  return bufferToString(bytes.slice(2, 2 + len));
+}
+
+/**
+ * Runs PBKDF2 exactly once and derives the two sub-keys with HMAC-as-PRF.
+ * Returns { hmacKey, aesKey } as CryptoKeys. Raw key bytes never leave this function
+ * except for being imported straight into non-extractable CryptoKeys.
+ */
+async function deriveKeys(password, salt) {
+  const passwordKey = await subtle.importKey(
+    "raw", stringToBuffer(password), "PBKDF2", false, ["deriveKey"]);
+
+  // master key k, usable only as an HMAC key
+  const masterKey = await subtle.deriveKey(
+    { name: "PBKDF2", salt: salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+    passwordKey,
+    { name: "HMAC", hash: "SHA-256", length: 256 },
+    false,
+    ["sign"]);
+
+  // two sub-keys = HMAC(k, label) at two different labels
+  const hmacKeyMaterial = await subtle.sign("HMAC", masterKey, stringToBuffer("keychain-domain-hmac-key"));
+  const aesKeyMaterial = await subtle.sign("HMAC", masterKey, stringToBuffer("keychain-aes-gcm-key"));
+
+  const hmacKey = await subtle.importKey(
+    "raw", hmacKeyMaterial, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const aesKey = await subtle.importKey(
+    "raw", aesKeyMaterial, "AES-GCM", false, ["encrypt", "decrypt"]);
+  return { hmacKey, aesKey };
+}
+
+/** AES-GCM encrypt with a fresh random IV. Returns { iv, ct } as Base64 strings. */
+async function encryptRecord(aesKey, plaintext, aad) {
+  const iv = getRandomBytes(IV_LENGTH);
+  const ct = await subtle.encrypt(
+    { name: "AES-GCM", iv: iv, additionalData: stringToBuffer(aad) }, aesKey, plaintext);
+  return { iv: encodeBuffer(iv), ct: encodeBuffer(ct) };
+}
+
+/** AES-GCM decrypt. Throws (the SubtleCrypto rejection) if the tag does not verify. */
+async function decryptRecord(aesKey, record, aad) {
+  if (!record || typeof record.iv !== "string" || typeof record.ct !== "string") {
+    throw "Tampering detected: malformed record";
+  }
+  return subtle.decrypt(
+    { name: "AES-GCM", iv: decodeBuffer(record.iv), additionalData: stringToBuffer(aad) },
+    aesKey, decodeBuffer(record.ct));
+}
+
+/** SHA-256 of a string, Base64 encoded. */
+async function checksum(str) {
+  return encodeBuffer(await subtle.digest("SHA-256", stringToBuffer(str)));
+}
+
 /********* Implementation ********/
 class Keychain {
   /**
-   * Initializes the keychain using the provided information. Note that external
-   * users should likely never invoke the constructor directly and instead use
-   * either Keychain.init or Keychain.load. 
-   * Arguments:
-   *  You may design the constructor with any parameters you would like. 
-   * Return Type: void
+   * Not meant to be called directly; use Keychain.init or Keychain.load.
+   *   data:    public state (safe for an adversary to see): salt, kvs, check
+   *   secrets: private state (never serialized): CryptoKeys
    */
-  constructor() {
-    this.data = { 
-      /* Store member variables that you intend to be public here
-         (i.e. information that will not compromise security if an adversary sees) */
-    };
-    this.secrets = {
-      /* Store member variables that you intend to be private here
-         (information that an adversary should NOT see). */
-    };
-
-    throw "Not Implemented!";
+  constructor(data, secrets) {
+    this.data = data;       // { salt: base64, kvs: {}, check: {iv, ct} }
+    this.secrets = secrets; // { hmacKey, aesKey }
   };
 
-  /** 
+  /**
     * Creates an empty keychain with the given password.
-    *
     * Arguments:
     *   password: string
-    * Return Type: void
+    * Return Type: Keychain
     */
   static async init(password) {
-    throw "Not Implemented!";
+    const salt = getRandomBytes(SALT_LENGTH);
+    const { hmacKey, aesKey } = await deriveKeys(password, salt);
+
+    // Encrypted "canary": lets load() tell a wrong password apart from tampering
+    // without storing any hash of the password.
+    const check = await encryptRecord(aesKey, stringToBuffer(CHECK_PLAINTEXT), CHECK_AAD);
+
+    return new Keychain(
+      { salt: encodeBuffer(salt), kvs: {}, check: check },
+      { hmacKey, aesKey });
   }
 
   /**
-    * Loads the keychain state from the provided representation (repr). The
-    * repr variable will contain a JSON encoded serialization of the contents
-    * of the KVS (as returned by the dump function). The trustedDataCheck
-    * is an *optional* SHA-256 checksum that can be used to validate the 
-    * integrity of the contents of the KVS. If the checksum is provided and the
-    * integrity check fails, an exception should be thrown. You can assume that
-    * the representation passed to load is well-formed (i.e., it will be
-    * a valid JSON object).Returns a Keychain object that contains the data
-    * from repr. 
-    *
+    * Loads the keychain state from the provided representation (repr).
+    * Throws if the password is wrong or the data/checksum has been tampered with.
     * Arguments:
-    *   password:           string
-    *   repr:               string
-    *   trustedDataCheck: string
+    *   password:         string
+    *   repr:             string
+    *   trustedDataCheck: string (optional)
     * Return Type: Keychain
     */
   static async load(password, repr, trustedDataCheck) {
-    throw "Not Implemented!";
+    // 1. Rollback / tamper check against trusted storage (cheap, so done before PBKDF2)
+    if (trustedDataCheck !== undefined) {
+      if ((await checksum(repr)) !== trustedDataCheck) {
+        throw "Tampering detected: checksum mismatch";
+      }
+    }
+
+    // 2. Parse and validate the structure
+    let parsed;
+    try {
+      parsed = JSON.parse(repr);
+    } catch (e) {
+      throw "Invalid keychain representation";
+    }
+    if (!parsed || typeof parsed.salt !== "string" || typeof parsed.kvs !== "object" ||
+        parsed.kvs === null || !parsed.check) {
+      throw "Invalid keychain representation";
+    }
+
+    // 3. Re-derive keys (the single PBKDF2 call) and verify the password via the canary
+    const { hmacKey, aesKey } = await deriveKeys(password, decodeBuffer(parsed.salt));
+    let canary;
+    try {
+      canary = bufferToString(await decryptRecord(aesKey, parsed.check, CHECK_AAD));
+    } catch (e) {
+      throw "Invalid password or corrupted keychain";
+    }
+    if (canary !== CHECK_PLAINTEXT) throw "Invalid password or corrupted keychain";
+
+    return new Keychain(
+      { salt: parsed.salt, kvs: parsed.kvs, check: parsed.check },
+      { hmacKey, aesKey });
   };
 
   /**
-    * Returns a JSON serialization of the contents of the keychain that can be 
-    * loaded back using the load function. The return value should consist of
-    * an array of two strings:
-    *   arr[0] = JSON encoding of password manager
-    *   arr[1] = SHA-256 checksum (as a string)
-    * As discussed in the handout, the first element of the array should contain
-    * all of the data in the password manager. The second element is a SHA-256
-    * checksum computed over the password manager to preserve integrity.
-    *
+    * Returns [JSON serialization, SHA-256 checksum]. The JSON contains only public data:
+    * salt, encrypted canary, and kvs (HMAC'd domains -> ciphertexts).
     * Return Type: array
-    */ 
+    */
   async dump() {
-    throw "Not Implemented!";
+    const repr = JSON.stringify({
+      salt: this.data.salt,
+      check: this.data.check,
+      kvs: this.data.kvs
+    });
+    return [repr, await checksum(repr)];
   };
 
+  /** Computes the Base64 HMAC lookup key for a domain name. */
+  async _lookupKey(name) {
+    return encodeBuffer(await subtle.sign("HMAC", this.secrets.hmacKey, stringToBuffer(name)));
+  }
+
   /**
-    * Fetches the data (as a string) corresponding to the given domain from the KVS.
-    * If there is no entry in the KVS that matches the given domain, then return
-    * null.
-    *
-    * Arguments:
-    *   name: string
+    * Fetches the password for the domain, or null if there is none.
+    * Throws if the record fails authentication (modification or swap).
     * Return Type: Promise<string>
     */
   async get(name) {
-    throw "Not Implemented!";
+    const lookup = await this._lookupKey(name);
+    if (!Object.prototype.hasOwnProperty.call(this.data.kvs, lookup)) return null;
+    let padded;
+    try {
+      // AAD = lookup key: a record moved to another slot will fail authentication
+      padded = await decryptRecord(this.secrets.aesKey, this.data.kvs[lookup], lookup);
+    } catch (e) {
+      throw "Tampering detected: record failed authentication";
+    }
+    return unpadValue(padded);
   };
 
-  /** 
-  * Inserts the domain and associated data into the KVS. If the domain is
-  * already in the password manager, this method should update its value. If
-  * not, create a new entry in the password manager.
-  *
+  /**
+  * Inserts or updates the password for a domain.
   * Arguments:
   *   name: string
   *   value: string
   * Return Type: void
   */
   async set(name, value) {
-    throw "Not Implemented!";
+    const lookup = await this._lookupKey(name);
+    const padded = padValue(value);
+    this.data.kvs[lookup] = await encryptRecord(this.secrets.aesKey, padded, lookup);
   };
 
   /**
-    * Removes the record with name from the password manager. Returns true
-    * if the record with the specified name is removed, false otherwise.
-    *
-    * Arguments:
-    *   name: string
+    * Removes the record for the domain. Returns true if removed, false if absent.
     * Return Type: Promise<boolean>
   */
   async remove(name) {
-    throw "Not Implemented!";
+    const lookup = await this._lookupKey(name);
+    if (!Object.prototype.hasOwnProperty.call(this.data.kvs, lookup)) return false;
+    delete this.data.kvs[lookup];
+    return true;
   };
 };
 
