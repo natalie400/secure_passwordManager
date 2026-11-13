@@ -1,29 +1,23 @@
 # Dependencies
 node_modules/
 
-# Environment variables
+# Environment variables and secrets
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 
-# Build files
+# Build output
 dist/
 build/
+coverage/
 
 # Logs
 *.log
 
-# Windows metadata
-*:Zone.Identifier
-
-# System files
-.DS_Store
-Thumbs.dbnode_modules/
-.env
-.env.local
-.env.production
-dist/
-build/
-*.log
+# OS / editor junk
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
+
+# Exported vault backups
+*.vault.json
