@@ -1,0 +1,48 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String     @id @default(uuid())
+  email          String     @unique
+  passwordHash   String     @map("password_hash")
+  failedAttempts Int        @default(0) @map("failed_attempts")
+  lockedUntil    DateTime?  @map("locked_until")
+  createdAt      DateTime   @default(now()) @map("created_at")
+
+  vault          Vault?
+  auditLogs      AuditLog[]
+
+  @@map("users")
+}
+
+model Vault {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  repr      String   // JSON string from Keychain.dump(): { salt, check, kvs }
+  checksum  String   // Base64 SHA-256 checksum from Keychain.dump()
+  version   Int      @default(1) // Optimistic concurrency counter
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("vaults")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  action    String   // REGISTER, LOGIN_SUCCESS, LOGIN_FAILED, VAULT_CREATED, VAULT_UPDATED, VAULT_DELETED
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("audit_logs")
+}

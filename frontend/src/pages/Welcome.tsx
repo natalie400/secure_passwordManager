@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { Lock, KeyRound, ShieldCheck, Server } from "lucide-react";
 import Logo from "../components/Logo";
-import { hasStoredVault } from "../lib/vaultService";
+import { useVault } from "../context/VaultContext";
 
 const FEATURES = [
   { icon: Lock, title: "Encrypted on your device", text: "Every password is sealed with AES-GCM in your browser before it is saved." },
@@ -11,12 +11,18 @@ const FEATURES = [
 ];
 
 export default function Welcome() {
-  const existing = hasStoredVault();
+  const { user, hasVault } = useVault();
+
+  const primaryHref = !user ? "/auth" : hasVault ? "/unlock" : "/setup";
+  const secondaryHref = !user ? "/auth" : "/unlock";
+
   return (
     <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-6 py-8">
       <header className="flex items-center justify-between">
         <Logo />
-        <Link to="/unlock" className="rounded-lg px-3 py-2 text-sm text-slate-300 hover:text-white">Sign in / Unlock</Link>
+        <Link to={secondaryHref} className="rounded-lg px-3 py-2 text-sm text-slate-300 hover:text-white">
+          {user ? (hasVault ? "Unlock Vault" : "Create Vault") : "Sign in / Register"}
+        </Link>
       </header>
 
       <main className="flex flex-1 flex-col justify-center py-12">
@@ -28,9 +34,11 @@ export default function Welcome() {
           locally, so the vault file is useless without your master password.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
-          <Link to="/setup" className="rounded-lg bg-emerald-500 px-5 py-3 font-semibold text-slate-950 hover:bg-emerald-400">Get started</Link>
-          <Link to="/unlock" className="rounded-lg border border-slate-600 px-5 py-3 font-semibold hover:bg-slate-800">
-            {existing ? "Unlock your vault" : "Sign in / Unlock"}
+          <Link to={primaryHref} className="rounded-lg bg-emerald-500 px-5 py-3 font-semibold text-slate-950 hover:bg-emerald-400">
+            Get started
+          </Link>
+          <Link to={secondaryHref} className="rounded-lg border border-slate-600 px-5 py-3 font-semibold hover:bg-slate-800">
+            {user && hasVault ? "Unlock your vault" : "Sign in / Unlock"}
           </Link>
         </div>
 

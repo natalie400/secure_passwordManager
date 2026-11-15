@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
@@ -22,36 +21,43 @@ interface Props {
 }
 
 export default function AppLayout({ children }: Props) {
-  const { entries, lock } = useVault();
+  const { entries, lock, logout, user } = useVault();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
 
- const navigation = [
-  {
-    name: "Dashboard",
-    path: "/dashboard",
-    icon: LayoutDashboard,
-  },
-  {
-    name: "Password Vault",
-    path: "/vault",
-    icon: KeyRound,
-  },
-  {
-    name: "Password Generator",
-    path: "/generator",
-    icon: WandSparkles,
-  },
-  {
-    name: "Security Center",
-    path: "/security",
-    icon: ShieldAlert,
-  },
-];
+  const navigation = [
+    {
+      name: "Dashboard",
+      path: "/dashboard",
+      icon: LayoutDashboard,
+    },
+    {
+      name: "Password Vault",
+      path: "/vault",
+      icon: KeyRound,
+    },
+    {
+      name: "Password Generator",
+      path: "/generator",
+      icon: WandSparkles,
+    },
+    {
+      name: "Security Center",
+      path: "/security",
+      icon: ShieldAlert,
+    },
+  ];
+
   function handleLock() {
     lock();
     setMobileOpen(false);
     navigate("/unlock", { replace: true });
+  }
+
+  async function handleLogout() {
+    setMobileOpen(false);
+    await logout();
+    navigate("/auth", { replace: true });
   }
 
   return (
@@ -123,8 +129,8 @@ export default function AppLayout({ children }: Props) {
           </nav>
         </div>
 
-        <div className="mt-auto space-y-4 p-4">
-          <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+        <div className="mt-auto space-y-2 p-4">
+          <div className="mb-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
             <div className="flex items-center gap-2 text-emerald-400">
               <ShieldCheck size={18} />
               <span className="text-sm font-semibold">
@@ -140,10 +146,19 @@ export default function AppLayout({ children }: Props) {
           <button
             type="button"
             onClick={handleLock}
+            className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm text-slate-400 hover:bg-amber-500/10 hover:text-amber-400"
+          >
+            <Lock size={19} />
+            Lock Vault
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLogout}
             className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm text-slate-400 hover:bg-red-500/10 hover:text-red-400"
           >
             <LogOut size={19} />
-            Lock Vault
+            Sign Out
           </button>
         </div>
       </aside>
@@ -162,7 +177,7 @@ export default function AppLayout({ children }: Props) {
 
             <div>
               <p className="text-xs text-slate-500">
-                SecureVault Workspace
+                {user?.email ?? "SecureVault Workspace"}
               </p>
               <h2 className="font-semibold">My Vault</h2>
             </div>

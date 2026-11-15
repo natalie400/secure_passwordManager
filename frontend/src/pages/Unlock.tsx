@@ -4,15 +4,14 @@ import { Link, useNavigate } from "react-router-dom";
 import Logo from "../components/Logo";
 import PasswordField from "../components/PasswordField";
 import { useVault } from "../context/VaultContext";
-import { VaultError, hasStoredVault } from "../lib/vaultService";
+import { VaultError } from "../lib/vaultService";
 
 export default function Unlock() {
-  const { unlock } = useVault();
+  const { unlock, hasVault, user, logout } = useVault();
   const navigate = useNavigate();
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const existing = hasStoredVault();
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -29,14 +28,31 @@ export default function Unlock() {
     }
   }
 
+  async function handleSignOut() {
+    await logout();
+    navigate("/auth", { replace: true });
+  }
+
   return (
     <div className="mx-auto min-h-screen max-w-md px-6 py-8">
-      <Logo />
+      <div className="flex items-center justify-between">
+        <Logo />
+        {user && (
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="text-xs text-slate-400 hover:text-slate-200 underline"
+          >
+            Sign out ({user.email})
+          </button>
+        )}
+      </div>
+
       <h1 className="mt-10 text-2xl font-bold">Unlock your vault</h1>
 
-      {!existing ? (
+      {!hasVault ? (
         <div className="mt-6 rounded-lg border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-300">
-          No vault was found on this device. <Link to="/setup" className="text-emerald-400 underline">Create one</Link>.
+          No vault was found for your account. <Link to="/setup" className="text-emerald-400 underline">Create one</Link>.
         </div>
       ) : (
         <form onSubmit={onSubmit} className="mt-6 space-y-5">
